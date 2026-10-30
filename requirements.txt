@@ -1,0 +1,4 @@
+# Production-grade Social Media Scraper Requirements
+playwright>=1.40.0
+openpyxl>=3.1.0
+rich>=13.0.0
