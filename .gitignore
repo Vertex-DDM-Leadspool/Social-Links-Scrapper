@@ -1,0 +1,76 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environments
+venv/
+.venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# Environment credentials (DO NOT COMMIT!)
+.env
+.env.local
+.env.*.local
+.env.production
+.env.staging
+!.env.example
+
+# Logs and runtime databases
+*.log
+scraper.log
+cron_scraper.log
+*.db
+*.sqlite3
+
+# Checkpoints and scrape outputs
+scraper_checkpoint.json
+socials_results.json
+socials_results.jsonl
+results*.json
+
+# Data files
+*.xlsx
+*.xls
+*.csv
+
+# OS generated
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# IDE & editors
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace

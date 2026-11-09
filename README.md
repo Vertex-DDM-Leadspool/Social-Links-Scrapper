@@ -1,136 +1,121 @@
-# Production-Grade Playwright Social Media & Email Crawler (Single Script)
+# LeadsPool Social Scraper & CRM Database Enricher
 
-A self-contained, production-grade crawler in a **single script** ([`scraper.py`](file:///home/saad/Desktop/Diadalus/Social-Scraper/scraper.py)). It reads website URLs from an Excel workbook, acts as an intelligent crawler following internal pages (contact, about, team, root homepage), bypasses anti-bot defenses, and outputs a simple JSON mapping of websites to socials and contact emails.
+A production-grade web crawler that automatically enriches your **Next.js + PostgreSQL CRM** (`LeadsPool-Outreach`). It pulls leads with website URLs from the database, crawls entry pages and subpages (`/contact`, `/about`, `/team`, root) using Playwright stealth anti-bot technology, extracts verified social media profiles (17+ platforms) and email addresses, and commits the enriched data back into the CRM database.
 
 ---
 
-## Simple JSON Structure
+## Key Capabilities
 
-The JSON directly maps the website to its socials and extracted emails:
+1. **Direct Database Integration**:
+   - Automatically pulls database credentials from `.env` (supports `DATABASE_URL` or individual `POSTGRES_*` variables).
+   - Supports production PostgreSQL and local SQLite (`dev.db`).
+   - Pulls active, non-archived companies where `website` is present.
+   - Automatically skips already enriched companies using smart pending filters.
+2. **Three-Table CRM Updates**:
+   - **`Company`**: Updates `linkedInUrl`, `companyProfile` (if empty), `webEmail` (if empty), and appends a clean structured breakdown of all social links into `comments`.
+   - **`Email`**: Inserts all newly discovered contact emails with `source = 'WEB'`, checking for role-based formats (`info@`, `contact@`, etc.) and deduplicating per company.
+   - **`Activity`**: Logs an audit entry (`type = 'SOCIALS_SCRAPED'`) detailing discovered profiles and emails.
+3. **Playwright Anti-Bot Stealth Crawler**:
+   - Injects stealth script (`navigator.webdriver` removal, Chrome runtime mocking, WebGL fingerprinting).
+   - Smooth lazy-scroll down each page to trigger footers where 90% of business social links reside.
+   - Automatic Cloudflare / WAF hydration challenge handling (HTTP 202 wait).
+   - Intelligent internal subpage ranking: crawls up to 4 internal pages (`/contact`, `/about`, `/team`, root).
+4. **Flexible Automation & Cron Scheduling**:
+   - **Linux Crontab Script** (`cron_job.sh`): Features `flock` locking to prevent overlapping runs.
+   - **Built-in Daemon Mode**: `python main.py --daemon --interval-hours 6` for zero-config background execution.
 
-```json
-{
-  "https://www.championrisk.com/": {
-    "emails": "info@championrisk.com",
-    "facebook": "https://facebook.com/ChampionRisk",
-    "twitter": "https://twitter.com/champrisk",
-    "linkedin": [
-      "http://linkedin.com/in/mark-raby-27439112",
-      "https://linkedin.com/company/champion-risk-&-insurance-services"
-    ]
-  },
-  "https://www.enterinsurance.com/": {
-    "emails": "1412@enterinsurance.com",
-    "facebook": "https://facebook.com/enterinsurance",
-    "instagram": [
-      "https://instagram.com/enterinsurancefla",
-      "https://instagram.com/enterinsurancehealth"
-    ],
-    "whatsapp": "https://wa.me/18134056150"
-  },
-  "https://adrianasinsurance.com/en/insurance/auto-insurance-8th-St": {
-    "facebook": [
-      "https://facebook.com/AdrianasInsurance",
-      "https://facebook.com/AdrianasInsuranceServices",
-      "https://facebook.com/adrianasinsurance"
-    ],
-    "instagram": "https://instagram.com/adrianasinsurance",
-    "youtube": [
-      "https://youtube.com/@AdrianasInsurance",
-      "https://youtube.com/@adrianasinsurance",
-      "https://youtube.com/@adrianasinsuranceservices"
-    ],
-    "tiktok": [
-      "https://tiktok.com/@adrianas_insurance",
-      "https://tiktok.com/@adrianasinsurance"
-    ],
-    "yelp": "https://yelp.com/biz/adrianas-insurance-baldwin-park",
-    "linkedin": "https://linkedin.com/company/adrianas-insurance"
-  },
-  "https://site-with-no-socials.com/": {}
-}
+---
+
+## Quick Start
+
+### 1. Install Dependencies
+```bash
+pip install -r requirements.txt
+playwright install chromium
 ```
 
-Or as a flat list with `--format list`:
-```json
-{
-  "https://www.championrisk.com/": [
-    "https://facebook.com/ChampionRisk",
-    "https://linkedin.com/company/champion-risk-&-insurance-services",
-    "https://twitter.com/champrisk",
-    "mailto:info@championrisk.com"
-  ]
-}
+### 2. Configure Environment
+Create or edit `.env` in this directory (or use the CRM's `.env` in the parent directory):
+```ini
+DATABASE_URL="postgresql://postgres:postgres@127.0.0.1:5432/lead_crm?schema=public"
+CONCURRENCY=4
+TIMEOUT_SECONDS=20
+```
+
+### 3. Run the Enricher
+
+```bash
+# Standard run: enriches up to 50 pending leads from the database
+python main.py --limit 50
 ```
 
 ---
 
-## How It Works as an Anti-Bot Crawler
+## Common Usage Examples
 
-1. **Anti-Bot Stealth**:
-   - Injects stealth script before page loads (`Object.defineProperty(navigator, 'webdriver', { get: () => undefined })`).
-   - Mocks `window.chrome.runtime`, real plugins, WebGL vendor, and browser languages.
-   - Disables Blink automation flags (`--disable-blink-features=AutomationControlled`).
-   - Uses OS-matched Chrome User-Agent and `Sec-Ch-Ua` headers.
-   - Automatically handles WAF/Cloudflare (HTTP 202) hydration challenges.
-
-2. **Smooth Lazy-Scroll Trigger**:
-   - 90% of business websites place social links in footers that only load when the user scrolls down.
-   - The crawler automatically scrolls to the bottom of each page to trigger lazy-loaded footers, iframes, and dynamic social widgets.
-
-3. **Intelligent Internal Crawling**:
-   - If socials are missing or partial on the entry page, it discovers and scores internal links on the same domain.
-   - High-priority pages crawled automatically:
-     - **Contact Pages**: `/contact`, `/contact-us`, `/reach-us`, `/get-in-touch`
-     - **About Pages**: `/about`, `/about-us`, `/who-we-are`, `/our-story`
-     - **Team Pages**: `/team`, `/our-team`, `/leadership`, `/agents`
-     - **Root Domain Homepage**: If the Excel URL was a deep subpage (e.g. `/en/insurance/auto-8th-st`), it automatically visits the root homepage.
-   - Aggregates all social profiles found across all subpages for that website.
-
-4. **Self-Contained Single Script**:
-   - Everything (Excel reader, anti-bot stealth, multi-page crawler, extraction, storage, and progress UI) is contained in **[`scraper.py`](file:///home/saad/Desktop/Diadalus/Social-Scraper/scraper.py)**.
-
-5. **Atomic Storage & Auto-Resume**:
-   - Periodically saves every 10 sites and on exit via temporary file replacement (`os.replace`), preventing corrupted JSON files.
-   - Resume mode: if stopped and re-run, it immediately skips already crawled websites.
-
----
-
-## How to Run
-
-### 1. Default Run (Full Excel Dataset, 8 Workers)
+### Test with SQLite Dev Database (Dry Run)
+Test scraping without writing any changes to the database:
 ```bash
-python3 scraper.py
+python main.py --db-url "sqlite:///../prisma/dev.db" --limit 5 --dry-run
 ```
 
-### 2. Quick Test Run (e.g., first 10 websites)
+### Enrich a Specific Company by ID
 ```bash
-python3 scraper.py --limit 10
+python main.py --company-id "cmvdtjxzz0005blptm3dilfd8"
 ```
 
-### 3. Flat List Format
+### Re-scrape All Companies (including already enriched ones)
 ```bash
-python3 scraper.py --format list
+python main.py --all --limit 100
 ```
 
-### 4. Custom Subpage Crawl Depth & Concurrency
+### Run as a Continuous Background Daemon (Every 6 Hours)
 ```bash
-python3 scraper.py --concurrency 10 --max-subpages 5 --timeout 15
+python main.py --daemon --interval-hours 6 --limit 50
+```
+
+### Save a Copy of Scraped Data to JSON
+```bash
+python main.py --limit 20 --export-json results.json
 ```
 
 ---
 
-## CLI Options
+## Cron Job Automation
+
+A production-ready script `cron_job.sh` is provided with automatic virtualenv detection and lockfile handling:
+
+```bash
+chmod +x cron_job.sh
+```
+
+### Crontab Setup (Linux)
+```bash
+crontab -e
+```
+Add:
+```bash
+0 */6 * * * /bin/bash /path/to/Social-Links-Scrapper/cron_job.sh >> /var/log/social_scraper_cron.log 2>&1
+```
+
+---
+
+## CLI Options Reference
 
 | Flag | Default | Description |
 | :--- | :--- | :--- |
-| `--excel PATH` | `US Insurance brokers Data (Responses).xlsx` | Path to Excel file |
-| `--output PATH` | `socials_results.json` | Path to save output JSON |
-| `--format {dict,list}` | `dict` | `dict` (categorized) or `list` (flat array) |
-| `--concurrency N` | `8` | Number of concurrent browser workers |
-| `--timeout N` | `20` | Timeout per page in seconds |
+| `--db-url URL` | `.env` | PostgreSQL (`postgresql://...`) or SQLite (`sqlite:///...`) URL |
+| `--limit N` | None (all) | Max companies to scrape in this execution |
+| `--concurrency N` | `4` | Number of concurrent Playwright browser workers |
+| `--timeout N` | `20` | Page navigation timeout in seconds |
 | `--max-subpages N` | `4` | Max internal subpages (contact/about/team/root) to crawl per site |
-| `--limit N` | `None` (all) | Limit number of websites to crawl |
-| `--no-resume` | `False` | Start from scratch instead of resuming |
-| `--no-headless` | `False` | Run browser visibly for debugging |
-| `-v, --verbose` | `False` | Enable debug logs in console |
+| `--all` | `False` | Scrape all companies with websites, even if already enriched |
+| `--company-id ID` | `None` | Target a single company record by its CUID |
+| `--dry-run` | `False` | Scrape websites but do not write changes to database |
+| `--daemon` | `False` | Run continuously in background, waking up periodically |
+| `--interval-hours N` | `6.0` | Hours between cycles when running in daemon mode |
+| `--checkpoint-file PATH`| `scraper_checkpoint.json` | File path to store batch progress for resuming |
+| `--export-json PATH` | `None` | Save an export copy of all results to a JSON file |
+| `--no-resume` | `False` | Ignore checkpoint and start fresh |
+| `--no-headless` | `False` | Open browser visibly for debugging |
+| `-v, --verbose` | `False` | Enable detailed debug logs |

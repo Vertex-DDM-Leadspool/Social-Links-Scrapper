@@ -1,4 +1,4 @@
-"""Configuration settings for the Social Media Scraper."""
+"""Configuration settings for the Social Media Scraper and CRM Database Enricher."""
 
 from dataclasses import dataclass
 from pathlib import Path
@@ -47,20 +47,25 @@ SOCIAL_PLATFORMS: Set[str] = {
 
 @dataclass
 class ScraperConfig:
-    """Configuration options for the scraper execution."""
-    excel_path: Path = Path("US Insurance brokers Data (Responses).xlsx")
-    sheet_name: Optional[str] = None
-    website_column: Optional[str] = None
-    output_path: Path = Path("socials_results.json")
-    jsonl_output_path: Optional[Path] = Path("socials_results.jsonl")
-    output_format: str = "dict"  # "dict", "list", or "detailed"
+    """Configuration options for the scraper and database enrichment execution."""
+    # Database settings
+    database_url: Optional[str] = None
+    pending_only: bool = True               # Only scrape companies missing LinkedIn/email/socials
+    company_id: Optional[str] = None       # Target specific company ID
+    dry_run: bool = False                  # Do not write changes to database
 
-    # Concurrency and timing
-    concurrency: int = 8
-    timeout_seconds: int = 20
-    navigation_wait_until: str = "domcontentloaded"  # "load", "domcontentloaded", "networkidle"
-    page_settle_wait_ms: int = 1500                  # Standard wait for client JS rendering
-    waf_challenge_wait_ms: int = 3500                # Wait when 202 / WAF challenge is encountered
+    # File exports & checkpoints
+    checkpoint_path: Path = Path("scraper_checkpoint.json")
+    export_json: Optional[Path] = None     # Optional JSON export path
+    output_format: str = "dict"            # "dict" or "list"
+
+    # Crawler concurrency & timing
+    concurrency: int = 4                   # Number of concurrent browser pages
+    timeout_seconds: int = 20              # Page navigation timeout
+    max_subpages: int = 4                  # Internal subpages (contact/about/team/root)
+    navigation_wait_until: str = "domcontentloaded"
+    page_settle_wait_ms: int = 1500
+    waf_challenge_wait_ms: int = 3500
     max_retries: int = 1
 
     # Browser behavior
@@ -73,9 +78,11 @@ class ScraperConfig:
     # Scraper features
     check_root_fallback: bool = True       # If subpage has 0 socials, check root domain
     check_contact_fallback: bool = True    # If root has 0 socials, check contact/about page
-    save_interval: int = 10                # Save progress to JSON every N items
+    save_interval: int = 10                # Checkpoint save interval
     resume: bool = True                    # Resume from previous output if exists
 
-    # Limits
+    # Limits & Scheduling
     limit: Optional[int] = None            # Max websites to scrape
     start_index: int = 0                   # Offset to start from
+    daemon: bool = False                   # Run as a continuous background daemon
+    interval_hours: float = 6.0            # Daemon recurrence interval in hours

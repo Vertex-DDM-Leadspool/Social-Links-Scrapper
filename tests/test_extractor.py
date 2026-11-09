@@ -1,7 +1,12 @@
 """Unit tests for SocialExtractor."""
 
+from pathlib import Path
+import sys
 import unittest
-from extractor import EmailExtractor, SocialExtractor
+
+sys.path.insert(0, str(Path(__file__).parent.parent.resolve()))
+
+from scraper import EmailExtractor, SocialExtractor
 
 
 class TestSocialExtractor(unittest.TestCase):
@@ -94,7 +99,7 @@ class TestSocialExtractor(unittest.TestCase):
         self.assertIn("facebook", res)
         self.assertIn("twitter", res)
         self.assertIn("linkedin", res)
-        self.assertEqual(res["facebook"], ["https://www.facebook.com/AcmeInsurance"])
+        self.assertEqual(res["facebook"], ["https://facebook.com/AcmeInsurance"])
 
     def test_meta_tag_extraction(self):
         metas = [
