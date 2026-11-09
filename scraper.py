@@ -682,10 +682,11 @@ class SiteCrawler:
 
     def __init__(
         self,
-        max_subpages_per_site: int = 4,
-        timeout_seconds: int = 20,
+        max_subpages_per_site: int = 3,
+        timeout_seconds: int = 15,
     ):
         self.max_subpages = max_subpages_per_site
+        self.timeout_seconds = timeout_seconds
         self.timeout_ms = timeout_seconds * 1000
 
     def rank_internal_subpages(self, hrefs: List[str], base_url: str) -> List[str]:
@@ -737,25 +738,44 @@ class SiteCrawler:
         scored_links.sort(key=lambda x: -x[1])
         return [url for url, _ in scored_links[:self.max_subpages]]
 
-    async def crawl_single_page(self, page: Page, url: str) -> Tuple[Dict[str, List[str]], Set[str], List[str]]:
+    async def crawl_single_page(
+        self,
+        page: Page,
+        url: str,
+        timeout_ms: Optional[int] = None,
+        log_fn: Optional[Any] = None,
+        log_prefix: str = "",
+    ) -> Tuple[Dict[str, List[str]], Set[str], List[str]]:
         """Navigate to a page with anti-bot handling, scroll down, and extract socials and emails."""
+        t_ms = timeout_ms or self.timeout_ms
         try:
-            res = await page.goto(url, timeout=self.timeout_ms, wait_until="domcontentloaded")
-            status = res.status if res else None
+            if log_fn:
+                log_fn(f"{log_prefix} [dim]→ Fetching:[/] [blue]{url}[/] [dim]({t_ms//1000}s timeout)[/dim]")
+
+            res = await page.goto(url, timeout=t_ms, wait_until="domcontentloaded")
+            status = res.status if res else 200
 
             # Handle WAF challenge (HTTP 202) or blank dynamic rendering
-            title = await page.title()
+            try:
+                title = await page.title()
+            except Exception:
+                title = ""
+
             if status in (202, 403) or not title:
-                await page.wait_for_timeout(3500)
+                if log_fn:
+                    log_fn(f"{log_prefix} [dim]  Waiting for challenge/render...[/dim]")
+                await page.wait_for_timeout(1500)
 
             # Scroll smoothly to bottom to trigger lazy-loaded footers and social widgets
             await page.evaluate("""
-                window.scrollTo({
-                    top: document.body.scrollHeight,
-                    behavior: 'smooth'
-                });
+                try {
+                    window.scrollTo({
+                        top: document.body.scrollHeight,
+                        behavior: 'smooth'
+                    });
+                } catch(e) {}
             """)
-            await page.wait_for_timeout(1000)
+            await page.wait_for_timeout(600)
 
             # In-page JS extraction
             data = await page.evaluate(DOM_EXTRACTOR_SCRIPT)
@@ -791,11 +811,28 @@ class SiteCrawler:
             return merged_socials, merged_emails, raw_hrefs
 
         except Exception as e:
+            err_line = str(e).split("\n")[0]
+            if "Timeout" in err_line:
+                err_line = f"Navigation timed out ({t_ms//1000}s)"
+            if log_fn:
+                log_fn(f"{log_prefix} [yellow]  ⚠ Could not load {url}: {err_line}[/yellow]")
             logger.debug(f"Error crawling {url}: {e}")
             return {}, set(), []
 
-    async def crawl_site(self, target: SiteTarget, browser: Browser) -> Dict[str, Any]:
+    async def crawl_site(
+        self,
+        target: SiteTarget,
+        browser: Browser,
+        log_fn: Optional[Any] = None,
+        log_prefix: str = "",
+    ) -> Dict[str, Any]:
         """Crawl the entry website and relevant internal subpages to gather all socials and emails."""
+        # Ensure scheme is present
+        url = (target.normalized_url or "").strip()
+        if not url.startswith("http://") and not url.startswith("https://"):
+            url = f"https://{url}"
+        target.normalized_url = url
+
         # Create dedicated incognito context per site
         context = await browser.new_context(
             user_agent=DEFAULT_USER_AGENT,
@@ -821,18 +858,39 @@ class SiteCrawler:
 
         try:
             # 1. Crawl initial entry URL
-            socials, emails, hrefs = await self.crawl_single_page(page, target.normalized_url)
+            if log_fn:
+                log_fn(f"{log_prefix} [cyan]🌐 Navigating to entry page:[/] [bold]{target.normalized_url}[/]")
+
+            socials, emails, hrefs = await self.crawl_single_page(
+                page, target.normalized_url, timeout_ms=self.timeout_ms, log_fn=log_fn, log_prefix=log_prefix
+            )
             all_socials_dict = SocialExtractor.merge_social_dicts(all_socials_dict, socials)
             all_emails_set.update(emails)
 
+            if log_fn:
+                entry_socials = [k.capitalize() for k in socials if socials[k]]
+                log_fn(
+                    f"{log_prefix} [dim]✓ Entry page parsed:[/] "
+                    f"[green]{len(entry_socials)} socials ({', '.join(entry_socials) or 'none'})[/], "
+                    f"[yellow]{len(emails)} emails[/]"
+                )
+
             # 2. Discover and rank candidate internal subpages (contact, about, team, root)
             candidate_subpages = self.rank_internal_subpages(hrefs, target.normalized_url)
+            if candidate_subpages and log_fn:
+                paths = [urlparse(u).path or '/' for u in candidate_subpages]
+                log_fn(f"{log_prefix} [dim]🔗 Discovered {len(candidate_subpages)} internal subpages to check: {paths}[/dim]")
 
             # 3. Follow subpages if more socials/emails might exist
-            for sub_url in candidate_subpages:
+            for idx, sub_url in enumerate(candidate_subpages, start=1):
                 if sub_url not in crawled_pages:
                     crawled_pages.append(sub_url)
-                    sub_socials, sub_emails, _ = await self.crawl_single_page(page, sub_url)
+                    sub_path = urlparse(sub_url).path or sub_url
+                    if log_fn:
+                        log_fn(f"{log_prefix} [dim]  └─ [{idx}/{len(candidate_subpages)}] Checking subpage: {sub_path}...[/dim]")
+                    sub_socials, sub_emails, _ = await self.crawl_single_page(
+                        page, sub_url, timeout_ms=min(self.timeout_ms, 10000), log_fn=log_fn, log_prefix=log_prefix
+                    )
                     all_socials_dict = SocialExtractor.merge_social_dicts(all_socials_dict, sub_socials)
                     all_emails_set.update(sub_emails)
 
@@ -862,6 +920,8 @@ class SiteCrawler:
 
         except Exception as e:
             logger.warning(f"Failed to crawl {target.normalized_url}: {e}")
+            if log_fn:
+                log_fn(f"{log_prefix} [yellow]⚠ Failed to crawl {target.normalized_url}: {e}[/yellow]")
             return {
                 "website": target.original_url,
                 "emails": [],
@@ -872,8 +932,14 @@ class SiteCrawler:
                 "pages_crawled": crawled_pages,
             }
         finally:
-            await page.close()
-            await context.close()
+            try:
+                await page.close()
+            except Exception:
+                pass
+            try:
+                await context.close()
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":

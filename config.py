@@ -61,11 +61,11 @@ class ScraperConfig:
 
     # Crawler concurrency & timing
     concurrency: int = 4                   # Number of concurrent browser pages
-    timeout_seconds: int = 20              # Page navigation timeout
-    max_subpages: int = 4                  # Internal subpages (contact/about/team/root)
+    timeout_seconds: int = 15              # Page navigation timeout
+    max_subpages: int = 3                  # Internal subpages (contact/about/team/root)
     navigation_wait_until: str = "domcontentloaded"
-    page_settle_wait_ms: int = 1500
-    waf_challenge_wait_ms: int = 3500
+    page_settle_wait_ms: int = 800
+    waf_challenge_wait_ms: int = 2000
     max_retries: int = 1
 
     # Browser behavior

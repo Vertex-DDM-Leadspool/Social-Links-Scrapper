@@ -309,21 +309,16 @@ async def scrape_and_enrich_batch(
         timeout_seconds=config.timeout_seconds,
     )
 
+    total_to_process = len(to_process)
     queue: asyncio.Queue = asyncio.Queue()
-    for lead in to_process:
-        await queue.put(lead)
+    for idx, lead in enumerate(to_process, start=1):
+        await queue.put((idx, lead))
 
-    # Progress UI
-    progress = Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        BarColumn(),
-        MofNCompleteColumn(),
-        TimeElapsedColumn(),
-        TimeRemainingColumn(),
-        console=console,
+    console.print(
+        f"\n[bold green]► Starting Enrichment Batch:[/] [cyan]{total_to_process} companies queued[/] | "
+        f"[yellow]Concurrency: {config.concurrency} workers[/] | [yellow]Timeout: {config.timeout_seconds}s/page[/]\n"
     )
-    task_id = progress.add_task("[cyan]Crawling & Enriching CRM Leads...", total=len(to_process))
+    sys.stdout.flush()
 
     # Anti-bot browser arguments
     launch_args = [
@@ -340,6 +335,8 @@ async def scrape_and_enrich_batch(
     total_socials_counter: Dict[str, int] = {p: 0 for p in SOCIAL_PLATFORMS}
     total_emails_added: int = 0
     successful_updates: int = 0
+    completed_count: int = 0
+    completed_lock = asyncio.Lock()
 
     try:
         async with async_playwright() as p:
@@ -348,30 +345,67 @@ async def scrape_and_enrich_batch(
                 args=launch_args,
             )
 
-            async def worker():
-                nonlocal successful_updates, total_emails_added
+            async def worker(worker_id: int):
+                nonlocal successful_updates, total_emails_added, completed_count
                 while not queue.empty():
                     try:
-                        lead: CompanyLead = await queue.get()
+                        lead_idx, lead = await queue.get()
                     except asyncio.QueueEmpty:
                         break
+
+                    prefix = f"[bold cyan][{lead_idx}/{total_to_process}][/bold cyan]"
+                    lead_name = (lead.name or lead.website or "Untitled Lead").strip()
+                    
+                    raw_url = (lead.website or "").strip()
+                    if not raw_url.startswith("http://") and not raw_url.startswith("https://"):
+                        target_url = f"https://{raw_url}"
+                    else:
+                        target_url = raw_url
+
+                    start_t = time.time()
+                    time_str = datetime.now().strftime("%H:%M:%S")
+                    console.print(
+                        f"\n{prefix} [dim][{time_str}][/dim] [bold white]🚀 Processing:[/] [bold yellow]{lead_name}[/] "
+                        f"[dim]({target_url})[/dim] [dim][Worker #{worker_id}][/dim]"
+                    )
+                    sys.stdout.flush()
 
                     try:
                         target = SiteTarget(
                             original_url=lead.website,
-                            normalized_url=lead.website,
+                            normalized_url=target_url,
                             domain=lead.normalized_domain or "",
-                            row_number=0,
+                            row_number=lead_idx,
                         )
 
-                        # Crawl site and subpages
-                        crawl_res = await crawler.crawl_site(target, browser)
+                        # Crawl site and subpages with safe overall timeout guard (max 35 seconds per site)
+                        max_site_timeout = max(35, config.timeout_seconds + (config.max_subpages * 10) + 5)
+                        try:
+                            crawl_res = await asyncio.wait_for(
+                                crawler.crawl_site(target, browser, log_fn=console.print, log_prefix=prefix),
+                                timeout=max_site_timeout,
+                            )
+                        except asyncio.TimeoutError:
+                            console.print(
+                                f"{prefix} [bold red]⏱ Global site timeout ({max_site_timeout}s limit reached)[/] "
+                                f"for {target_url} — skipping to next lead"
+                            )
+                            crawl_res = {
+                                "website": target_url,
+                                "emails": [],
+                                "socials_dict": {},
+                                "socials_list": [],
+                                "total_socials": 0,
+                                "total_emails": 0,
+                                "pages_crawled": [target_url],
+                            }
 
                         socials_dict = crawl_res.get("socials_dict", {})
                         emails_list = crawl_res.get("emails", [])
                         crawled_pages = crawl_res.get("pages_crawled", [])
 
                         # Save to database
+                        console.print(f"{prefix} [dim]💾 Saving to PostgreSQL database...[/dim]")
                         db_res = db.update_company_socials(
                             company_id=lead.id,
                             socials_dict=socials_dict,
@@ -402,24 +436,33 @@ async def scrape_and_enrich_batch(
                         if successful_updates % config.save_interval == 0:
                             checkpoint.save()
 
-                        # Progress status update
+                        elapsed = time.time() - start_t
+                        async with completed_lock:
+                            completed_count += 1
+                            percent = int((completed_count / total_to_process) * 100)
+                            remaining = total_to_process - completed_count
+
                         found_cnt = crawl_res.get("total_socials", 0)
                         found_emails = len(emails_list)
-                        short_name = (lead.name or lead.website)[:30]
-                        progress.update(
-                            task_id,
-                            advance=1,
-                            description=f"[cyan]{short_name}[/cyan] ([green]{found_cnt} socials[/green], [yellow]{found_emails} emails[/yellow])",
+                        platforms_found = [k.capitalize() for k in socials_dict.keys() if k != "emails"]
+
+                        console.print(
+                            f"{prefix} [bold green]✅ Finished in {elapsed:.1f}s[/] | "
+                            f"Found: [green]{found_cnt} socials ({', '.join(platforms_found) or 'none'})[/], [yellow]{found_emails} emails[/] | "
+                            f"[bold white]Progress: {completed_count}/{total_to_process} ({percent}%) — {remaining} remaining[/]"
                         )
+                        sys.stdout.flush()
 
                     except Exception as e:
                         logger.error(f"Error processing lead {lead.id} ({lead.website}): {e}")
+                        console.print(f"{prefix} [bold red]❌ Error on {lead_name}:[/] {e}")
+                        async with completed_lock:
+                            completed_count += 1
                     finally:
                         queue.task_done()
 
-            workers = [asyncio.create_task(worker()) for _ in range(config.concurrency)]
-            with progress:
-                await asyncio.gather(*workers)
+            workers = [asyncio.create_task(worker(w_id)) for w_id in range(1, config.concurrency + 1)]
+            await asyncio.gather(*workers)
 
             await browser.close()
 
