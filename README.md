@@ -31,7 +31,7 @@ A production-grade web crawler that automatically enriches your **Next.js + Post
 ### 1. Install Dependencies
 ```bash
 pip install -r requirements.txt
-playwright install chromium
+playwright install --with-deps chromium
 ```
 
 ### 2. Configure Environment
