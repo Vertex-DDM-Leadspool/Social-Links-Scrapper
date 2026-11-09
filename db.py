@@ -40,6 +40,7 @@ class CompanyLead:
     website: str
     normalized_domain: Optional[str]
     linkedin_url: Optional[str]
+    facebook_url: Optional[str]
     company_profile: Optional[str]
     web_email: Optional[str]
     comments: Optional[str]
@@ -164,6 +165,7 @@ class DatabaseClient:
         )
         self.conn = None
         self._has_socials_col: Optional[bool] = None
+        self._has_facebook_col: Optional[bool] = None
 
     def connect(self):
         """Establish connection to PostgreSQL or SQLite."""
@@ -271,6 +273,33 @@ class DatabaseClient:
 
         return self._has_socials_col
 
+    def check_has_facebook_column(self) -> bool:
+        """Check if 'facebookUrl' column exists on the Company table."""
+        if self._has_facebook_col is not None:
+            return self._has_facebook_col
+
+        self.connect()
+        cur = self.conn.cursor()
+        try:
+            if self.is_sqlite:
+                cur.execute('PRAGMA table_info("Company")')
+                cols = [row["name"] if hasattr(row, "__getitem__") and not isinstance(row, tuple) else row[1] for row in cur.fetchall()]
+                self._has_facebook_col = "facebookUrl" in cols
+            else:
+                cur.execute("""
+                    SELECT column_name 
+                    FROM information_schema.columns 
+                    WHERE table_name = 'Company' AND column_name = 'facebookUrl'
+                """)
+                self._has_facebook_col = cur.fetchone() is not None
+        except Exception as e:
+            logger.debug(f"Could not check for 'facebookUrl' column: {e}")
+            self._has_facebook_col = False
+        finally:
+            cur.close()
+
+        return self._has_facebook_col
+
     def fetch_companies_to_scrape(
         self,
         limit: Optional[int] = None,
@@ -306,8 +335,11 @@ class DatabaseClient:
         where_clause = " AND ".join(conditions)
         limit_clause = f" LIMIT {int(limit)}" if limit and limit > 0 else ""
 
+        has_fb = self.check_has_facebook_column()
+        fb_col_sql = '"facebookUrl"' if has_fb else 'NULL as "facebookUrl"'
+
         query = f"""
-            SELECT id, name, website, "normalizedDomain", "linkedInUrl", "companyProfile", "webEmail", comments, status
+            SELECT id, name, website, "normalizedDomain", "linkedInUrl", {fb_col_sql}, "companyProfile", "webEmail", comments, status
             FROM "Company"
             WHERE {where_clause}
             ORDER BY "createdAt" ASC
@@ -327,6 +359,7 @@ class DatabaseClient:
                             website=r["website"].strip(),
                             normalized_domain=r["normalizedDomain"],
                             linkedin_url=r["linkedInUrl"],
+                            facebook_url=r["facebookUrl"],
                             company_profile=r["companyProfile"],
                             web_email=r["webEmail"],
                             comments=r["comments"],
@@ -341,6 +374,7 @@ class DatabaseClient:
                             website=r["website"].strip(),
                             normalized_domain=r["normalizedDomain"],
                             linkedin_url=r["linkedInUrl"],
+                            facebook_url=r["facebookUrl"],
                             company_profile=r["companyProfile"],
                             web_email=r["webEmail"],
                             comments=r["comments"],
@@ -375,12 +409,19 @@ class DatabaseClient:
         self.connect()
         cur = self.conn.cursor()
         has_socials_col = self.check_has_socials_column()
+        has_fb_col = self.check_has_facebook_column()
 
         # Extract LinkedIn URL if discovered
         found_linkedin = None
         raw_li = socials_dict.get("linkedin")
         if raw_li:
             found_linkedin = raw_li[0] if isinstance(raw_li, list) else raw_li
+
+        # Extract Facebook URL if discovered
+        found_facebook = None
+        raw_fb = socials_dict.get("facebook")
+        if raw_fb:
+            found_facebook = raw_fb[0] if isinstance(raw_fb, list) else raw_fb
 
         # Extract first web email if discovered
         found_email = None
@@ -409,13 +450,15 @@ class DatabaseClient:
         try:
             # 1. Fetch current record comments and fields
             ph = "?" if self.is_sqlite else "%s"
+            fetch_cols = '"linkedInUrl", "companyProfile", "facebookUrl", "webEmail", comments' if has_fb_col else '"linkedInUrl", "companyProfile", "webEmail", comments'
             cur.execute(
-                f'SELECT "linkedInUrl", "companyProfile", "webEmail", comments FROM "Company" WHERE id = {ph}',
+                f'SELECT {fetch_cols} FROM "Company" WHERE id = {ph}',
                 [company_id],
             )
             curr = cur.fetchone()
             curr_linkedin = curr["linkedInUrl"] if curr else None
             curr_profile = curr["companyProfile"] if curr else None
+            curr_facebook = curr["facebookUrl"] if curr and has_fb_col and "facebookUrl" in curr else None
             curr_email = curr["webEmail"] if curr else None
             curr_comments = curr["comments"] if curr else None
 
@@ -434,9 +477,10 @@ class DatabaseClient:
             else:
                 updated_comments = new_comment_block
 
-            # Decide updated LinkedIn and Email
+            # Decide updated LinkedIn, Facebook, and Email
             final_linkedin = curr_linkedin or found_linkedin
             final_profile = curr_profile or found_linkedin
+            final_facebook = curr_facebook or found_facebook
             final_email = curr_email or found_email
 
             # 2. Update Company table
@@ -448,6 +492,10 @@ class DatabaseClient:
                 f'"updatedAt" = CURRENT_TIMESTAMP',
             ]
             update_params = [final_linkedin, final_profile, final_email, updated_comments]
+
+            if has_fb_col and final_facebook:
+                update_fields.append(f'"facebookUrl" = {ph}')
+                update_params.append(final_facebook)
 
             if has_socials_col:
                 socials_json = json.dumps(social_platforms_found)
@@ -509,6 +557,7 @@ class DatabaseClient:
                 "company_id": company_id,
                 "updated": True,
                 "linkedin": final_linkedin,
+                "facebook": final_facebook,
                 "web_email": final_email,
                 "emails_added": emails_added_count,
                 "socials_count": socials_count,
