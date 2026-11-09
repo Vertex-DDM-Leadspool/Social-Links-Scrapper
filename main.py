@@ -71,7 +71,7 @@ except ImportError:
 
 from config import SOCIAL_PLATFORMS, ScraperConfig
 from db import CompanyLead, DatabaseClient, load_env_database_url
-from scraper import SiteCrawler, SiteTarget
+from scraper import SiteCrawler, SiteTarget, normalize_domain, repair_website_url
 
 console = Console()
 logger = logging.getLogger("social_scraper")
@@ -357,16 +357,20 @@ async def scrape_and_enrich_batch(
                     lead_name = (lead.name or lead.website or "Untitled Lead").strip()
                     
                     raw_url = (lead.website or "").strip()
-                    if not raw_url.startswith("http://") and not raw_url.startswith("https://"):
-                        target_url = f"https://{raw_url}"
+                    repaired_url = repair_website_url(raw_url) or raw_url
+                    if not repaired_url.startswith("http://") and not repaired_url.startswith("https://"):
+                        target_url = f"https://{repaired_url}"
                     else:
-                        target_url = raw_url
+                        target_url = repaired_url
+
+                    repaired_domain = normalize_domain(target_url) or (lead.normalized_domain or "").strip()
 
                     start_t = time.time()
                     time_str = datetime.now().strftime("%H:%M:%S")
+                    url_display = target_url if target_url == raw_url else f"{target_url} [yellow](auto-repaired)[/yellow]"
                     console.print(
                         f"\n{prefix} [dim][{time_str}][/dim] [bold white]🚀 Processing:[/] [bold yellow]{lead_name}[/] "
-                        f"[dim]({target_url})[/dim] [dim][Worker #{worker_id}][/dim]"
+                        f"[dim]({url_display})[/dim] [dim][Worker #{worker_id}][/dim]"
                     )
                     sys.stdout.flush()
 
@@ -374,7 +378,7 @@ async def scrape_and_enrich_batch(
                         target = SiteTarget(
                             original_url=lead.website,
                             normalized_url=target_url,
-                            domain=lead.normalized_domain or "",
+                            domain=repaired_domain,
                             row_number=lead_idx,
                         )
 
@@ -404,13 +408,15 @@ async def scrape_and_enrich_batch(
                         emails_list = crawl_res.get("emails", [])
                         crawled_pages = crawl_res.get("pages_crawled", [])
 
-                        # Save to database
+                        # Save to database (and persist repaired URL / domain if previously malformed)
                         console.print(f"{prefix} [dim]💾 Saving to PostgreSQL database...[/dim]")
                         db_res = db.update_company_socials(
                             company_id=lead.id,
                             socials_dict=socials_dict,
                             emails_list=emails_list,
                             pages_crawled_count=len(crawled_pages),
+                            repaired_website=target_url if target_url != lead.website else None,
+                            repaired_domain=repaired_domain if repaired_domain != lead.normalized_domain else None,
                             dry_run=config.dry_run,
                         )
 

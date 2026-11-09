@@ -381,6 +381,8 @@ class DatabaseClient:
         socials_dict: Dict[str, Any],
         emails_list: List[str],
         pages_crawled_count: int = 1,
+        repaired_website: Optional[str] = None,
+        repaired_domain: Optional[str] = None,
         dry_run: bool = False,
     ) -> Dict[str, Any]:
         """Update Company, Email, and Activity tables with scraped socials.
@@ -393,6 +395,7 @@ class DatabaseClient:
                 "updated": True,
                 "emails_added": len(emails_list),
                 "socials_count": len([k for k in socials_dict if k != "emails"]),
+                "repaired_website": repaired_website,
                 "dry_run": True,
             }
 
@@ -491,6 +494,14 @@ class DatabaseClient:
                 socials_json = json.dumps(social_platforms_found)
                 update_fields.append(f'socials = {ph}')
                 update_params.append(socials_json)
+
+            if repaired_website:
+                update_fields.append(f'website = {ph}')
+                update_params.append(repaired_website)
+
+            if repaired_domain:
+                update_fields.append(f'"normalizedDomain" = {ph}')
+                update_params.append(repaired_domain)
 
             update_params.append(company_id)
             set_clause = ", ".join(update_fields)

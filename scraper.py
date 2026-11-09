@@ -619,6 +619,66 @@ DOMAIN_REGEX = re.compile(
 STREET_KEYWORDS = {" rd", " st", " ave", " blvd", " dr", " ln", " way", " ct", " ste", " suite", " unit", " fl ", " floor", " pkwy", " hwy"}
 INVALID_URL_VALUES = {"n/a", "na", "none", "null", "-", "--", "no website", "unknown", "not available"}
 
+COMMON_TLDS = (
+    "com|org|net|edu|gov|io|co|ai|us|uk|ca|de|fr|it|es|au|biz|info|dev|app|tech|me|tv|cc|xyz|online|store|site"
+)
+
+
+def repair_website_url(raw: Optional[str]) -> Optional[str]:
+    """Repairs common OCR and copy-paste typos in website URLs (e.g. missing dots after www or before com)."""
+    if not raw or not isinstance(raw, str):
+        return None
+    val = raw.strip()
+    if not val:
+        return None
+
+    # Check for invalid placeholders
+    if val.lower() in INVALID_URL_VALUES:
+        return None
+
+    # Detect protocol
+    proto_match = re.match(r"^(https?:\/\/|\/\/)", val, re.IGNORECASE)
+    scheme = "https://"
+    remainder = val
+    if proto_match:
+        matched = proto_match.group(1).lower()
+        scheme = "https://" if matched == "//" else (matched if matched.endswith("://") else f"{matched}://")
+        remainder = val[len(proto_match.group(1)):]
+
+    # Fix missing dot after www (e.g. wwwgoogle.com -> www.google.com)
+    remainder = re.sub(r"^www([a-zA-Z0-9-])", r"www.\1", remainder, flags=re.IGNORECASE)
+
+    # Split host and path/query/fragment
+    split_match = re.match(r"^([^/?#]+)(.*)$", remainder)
+    if not split_match:
+        return f"{scheme}{remainder}"
+
+    host = split_match.group(1)
+    rest = split_match.group(2) or ""
+
+    # Fix missing dot before common TLD in host (e.g. googlecom -> google.com, www.googlecom -> www.google.com)
+    tld_regex = rf"([^.])({COMMON_TLDS})$"
+    host = re.sub(tld_regex, r"\1.\2", host, flags=re.IGNORECASE)
+
+    # Clean double dots or trailing dots
+    host = re.sub(r"\.{2,}", ".", host).strip(".")
+
+    if not host or "." not in host:
+        return f"{scheme}{host}{rest}" if host else None
+
+    return f"{scheme}{host}{rest}"
+
+
+def normalize_domain(raw: Optional[str]) -> Optional[str]:
+    """Extract clean root domain from raw URL or domain string."""
+    repaired = repair_website_url(raw)
+    if not repaired:
+        return None
+    cleaned = re.sub(r"^https?:\/\/", "", repaired, flags=re.IGNORECASE).split("/")[0].split("?")[0].split("#")[0].strip().lower()
+    if cleaned.startswith("www."):
+        cleaned = cleaned[4:]
+    return cleaned if "." in cleaned else None
+
 
 @dataclass
 class SiteTarget:
@@ -827,8 +887,9 @@ class SiteCrawler:
         log_prefix: str = "",
     ) -> Dict[str, Any]:
         """Crawl the entry website and relevant internal subpages to gather all socials and emails."""
-        # Ensure scheme is present
-        url = (target.normalized_url or "").strip()
+        # Ensure scheme is present and repair any malformed URLs missing dots
+        repaired = repair_website_url(target.normalized_url or target.original_url)
+        url = repaired or (target.normalized_url or "").strip()
         if not url.startswith("http://") and not url.startswith("https://"):
             url = f"https://{url}"
         target.normalized_url = url
