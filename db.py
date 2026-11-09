@@ -320,6 +320,7 @@ class DatabaseClient:
         conditions = [
             'website IS NOT NULL',
             "TRIM(website) != ''",
+            "LOWER(TRIM(website)) NOT IN ('n/a', 'na', 'none', 'null', '-', '--', 'no website', 'unknown', 'not available', 'nil')",
             'archived = false',
         ]
         params: List[Any] = []
