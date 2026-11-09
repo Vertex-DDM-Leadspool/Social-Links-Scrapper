@@ -262,7 +262,7 @@ class DatabaseClient:
                 cur.execute("""
                     SELECT column_name 
                     FROM information_schema.columns 
-                    WHERE table_name = 'Company' AND column_name = 'socials'
+                    WHERE LOWER(table_name) = 'company' AND LOWER(column_name) = 'socials'
                 """)
                 self._has_socials_col = cur.fetchone() is not None
         except Exception as e:
@@ -289,7 +289,7 @@ class DatabaseClient:
                 cur.execute("""
                     SELECT column_name 
                     FROM information_schema.columns 
-                    WHERE table_name = 'Company' AND column_name = 'facebookUrl'
+                    WHERE LOWER(table_name) = 'company' AND LOWER(column_name) = 'facebookurl'
                 """)
                 self._has_facebook_col = cur.fetchone() is not None
         except Exception as e:
@@ -324,13 +324,15 @@ class DatabaseClient:
         ]
         params: List[Any] = []
 
+        ph = '?' if self.is_sqlite else '%s'
+
         if company_id:
-            conditions.append('id = ?' if self.is_sqlite else 'id = %s')
+            conditions.append(f'id = {ph}')
             params.append(company_id)
         elif pending_only:
             # Pending criteria: not yet scraped by crawler (marked in comments)
-            cond_str = '(comments IS NULL OR comments NOT LIKE \'%Scraped Socials%\')'
-            conditions.append(cond_str)
+            conditions.append(f'(comments IS NULL OR comments NOT LIKE {ph})')
+            params.append('%Scraped Socials%')
 
         where_clause = " AND ".join(conditions)
         limit_clause = f" LIMIT {int(limit)}" if limit and limit > 0 else ""
@@ -347,40 +349,28 @@ class DatabaseClient:
         """
 
         try:
-            cur.execute(query, params)
+            if params:
+                cur.execute(query, params)
+            else:
+                cur.execute(query)
             rows = cur.fetchall()
             results = []
             for r in rows:
-                if self.is_sqlite:
-                    results.append(
-                        CompanyLead(
-                            id=r["id"],
-                            name=r["name"],
-                            website=r["website"].strip(),
-                            normalized_domain=r["normalizedDomain"],
-                            linkedin_url=r["linkedInUrl"],
-                            facebook_url=r["facebookUrl"],
-                            company_profile=r["companyProfile"],
-                            web_email=r["webEmail"],
-                            comments=r["comments"],
-                            status=r["status"],
-                        )
+                get_val = lambda key: r[key] if hasattr(r, "__getitem__") and key in r else (r.get(key) if hasattr(r, "get") else None)
+                results.append(
+                    CompanyLead(
+                        id=get_val("id"),
+                        name=get_val("name"),
+                        website=str(get_val("website") or "").strip(),
+                        normalized_domain=get_val("normalizedDomain"),
+                        linkedin_url=get_val("linkedInUrl"),
+                        facebook_url=get_val("facebookUrl"),
+                        company_profile=get_val("companyProfile"),
+                        web_email=get_val("webEmail"),
+                        comments=get_val("comments"),
+                        status=get_val("status"),
                     )
-                else:
-                    results.append(
-                        CompanyLead(
-                            id=r["id"],
-                            name=r["name"],
-                            website=r["website"].strip(),
-                            normalized_domain=r["normalizedDomain"],
-                            linkedin_url=r["linkedInUrl"],
-                            facebook_url=r["facebookUrl"],
-                            company_profile=r["companyProfile"],
-                            web_email=r["webEmail"],
-                            comments=r["comments"],
-                            status=r["status"],
-                        )
-                    )
+                )
             return results
         finally:
             cur.close()
